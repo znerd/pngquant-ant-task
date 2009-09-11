@@ -1,0 +1,97 @@
+This is pngquant-ant-task, an Apache Ant task for quantizing PNG images.
+Image quantization is the process of the reducing the number of colors in an
+image. Under the hood this task uses (and requires) pngquant, see:
+
+   http://www.libpng.org/pub/png/apps/pngquant.html
+
+This Ant task has been tested with the following combination of software:
+
+   - J2SE 5.0 and Java SE 6 (source code uses Java 5-features)
+   - Ant 1.7.1
+   - pngquant 1.0
+
+This software is available under the terms of a BSD-style license, see
+the accompanied LICENSE file.
+
+This task comes as a collection of Java source files that can be built with
+Ant. To compile the Java classes, run all available unit tests and build the
+JAR file run:
+
+   ant
+
+Note that this already requires 'pngquant' on the PATH. The result will be a
+JAR file:
+
+   build/pngquant-ant-task.jar
+
+If you don't have 'pngquant' installed and still want to build the JAR file,
+just execute:
+
+   ant jar
+
+This will skip the execution of the available unit tests.
+
+Example usage of the task in an Ant build file:
+
+   <taskdef name="pngquant"
+       classname="com.pensioenpage.jynx.pngquant.PngquantTask"
+       classpath="lib/pngquant-ant-task.jar" />
+
+   <pngquant dir="src/htdocs" todir="build/htdocs" />
+
+Although all parameters are optional, the task supports various:
+
+   method    - the quantization algoritm to apply, either "ordered" or
+               "diffusion" (Floyd-Steinberg); the default is "ordered";
+
+   colors    - the maximum number of colors, must not exceed 256, minimum is
+               2; the default is 256;
+
+   process   - flag that indicates if the input files should be processed at
+               all; there are 3 possible modes:
+
+                  "yes" - the files must be processed by pngquant, if at least
+                          one file could not be processed, then this task will
+                          fail (alternative is "true");
+
+                  "no"  - the files must not be processed by pngquant but must
+                          instead just be copied as-is, unchanged (alternative
+                          is "false");
+
+                  "try" - attempt to process all matching file(s), when a file
+                          fails to be processed, then copy the original file
+                          instead.
+
+   dir       - the source directory, to read PNG image files from, defaults to
+               the project base directory;
+
+   todir     - the destination directory, to write the produced PNG files to,
+               defaults to the source directory;
+
+   overwrite - when set this flag forces each existing output file to be
+               overwritten, even if it is newer than the respective source
+               file; defaults to 'no';
+
+   command   - the command to execute, by default the task uses 'pngquant';
+
+   timeOut   - the time-out in milliseconds for executing a single command,
+               defaults to 60000 (meaning 60 seconds);
+
+   includes  - the files in the source directory to include, defaults to all
+               files, although only those that end in '.png' will actually
+               be optimized or copied;
+
+   excludes  - the files to exclude, even if they are matched by the includes;
+
+and other parameters inherited from the MatchingTask, see:
+
+   http://ant.apache.org/manual/dirtasks.html
+
+If you want to file a bug report or a feature request, please do so here:
+
+   http://github.com/znerd/pngquant-ant-task/issues
+
+This software has been developed by:
+
+   Ernst de Haan      -  ernst@pensioenpage.com
+   PensioenPage B.V.  -  https://www.pensioenpage.com/
