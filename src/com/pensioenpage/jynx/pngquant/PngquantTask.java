@@ -488,36 +488,24 @@ public final class PngquantTask extends MatchingTask {
             String errorMessage = null;
             Throwable    caught = null;
 
-            // Create stream from input file
-            FileInputStream inStream = null;
+            // Create temporary input file
+            File tempInFile;
             try {
-               inStream = new FileInputStream(inFile);
+               tempInFile = File.createTempFile(getClass().getSimpleName(), ".png");
+               log("Created temporary input file \"" + tempInFile.getPath() + "\".", MSG_VERBOSE);
             } catch (Throwable exception) {
                failure      = true;
-               errorMessage = "Failed to create input stream from file " + quote(inFilePath) + '.';
+               errorMessage = "Failed to create temporary input file.";
                caught       = exception;
             }
 
-            // Create stream to output file
-            FileOutputStream outStream = null;
             if (! failure) try {
-               outStream = new FileOutputStream(outFile);
-            } catch (Throwable exception) {
-               failure      = true;
-               errorMessage = "Failed to create output stream to file " + quote(outFilePath) + '.';
-               caught       = exception;
-            }
-
-            if (! failure) {
-
-               // Create stream to error buffer
-               ByteArrayOutputStream errStream = new ByteArrayOutputStream();
 
                // Prepare for the command execution
-               PumpStreamHandler streamHandler = new PumpStreamHandler(outStream, errStream, inStream);
+               PumpStreamHandler streamHandler = new PumpStreamHandler();
                ExecuteWatchdog        watchdog = (_timeOut > 0L) ? new ExecuteWatchdog(_timeOut) : null;
                Execute                 execute = new Execute(streamHandler, watchdog);
-               String[]                cmdline = new String[] { command };
+               String[]                cmdline = new String[] { command, tempInFile.getPath() };
 
                execute.setAntRun(getProject());
                execute.setCommandline(cmdline);
@@ -531,16 +519,31 @@ public final class PngquantTask extends MatchingTask {
                   caught  = exception;
                }
 
+               String  tempInFileName = tempInFile.getName();
+               String tempOutFileName = tempInFileName.substring(0, tempInFileName.length() - 4) + "-fs8.png";
+               File       tempOutFile = new File(tempInFile.getParent(), tempInFile.getName().substring(0, tempInFile.getName().length() - 4));
+
                // Output to stderr indicates a failure
                errorMessage = errStream.toString();
                if (! isEmpty(errorMessage)) {
                   failure = true;
 
                // Empty output also indicates failure
-               } else if (! failure && !(outFile.exists() && outFile.length() > 0L)) {
+               } else if (! failure && !tempOutFile.exists()) {
                   failure      = true;
                   errorMessage = "No output produced.";
+
+               } else if (! failure && tempOutFile.length() < 1L) {
+                  failure      = true;
+                  errorMessage = "No output produced.";
+                  deleteFile(tempOutFile);
+
+               // Copy the temporary output file to the target location
+               } else {
+                  FileUtils.getFileUtils().copyFile(tempOutFile, outFile);
                }
+            } finally {
+               tempInFile.delete();
             }
 
             // Log the result for this individual file
@@ -586,6 +589,14 @@ public final class PngquantTask extends MatchingTask {
          throw new BuildException("" + failedCount + " file(s) failed to be processed and/or copied; " + processCount + " file(s) processed; " + copyCount + " file(s) copied; " + skippedCount + " file(s) skipped. Total duration is " + duration + " ms.");
       } else {
          log("" + processCount + " file(s) processed and " + copyCount + " file(s) copied in " + duration + " ms; " + skippedCount + " file(s) skipped.");
+      }
+   }
+
+   private void deleteFile(File f) {
+      try {
+         f.delete();
+      } catch (Throwable e) {
+         log("Failed to delete file \"" + f.getPath() + "\".", MSG_ERR);
       }
    }
 
