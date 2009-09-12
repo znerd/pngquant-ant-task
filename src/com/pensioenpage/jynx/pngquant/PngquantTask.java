@@ -537,8 +537,7 @@ public final class PngquantTask extends MatchingTask {
                Execute                 execute = new Execute(streamHandler, watchdog);
                String[]                cmdline = new String[] { command, String.valueOf(_numColors), tempInFile.getPath() };
 
-               execute.setAntRun(getProject());
-               execute.setCommandline(cmdline);
+               initExecute(execute, cmdline);
 
                // Execute the command
                try {
@@ -628,6 +627,17 @@ public final class PngquantTask extends MatchingTask {
       }
    }
 
+   private void initExecute(Execute execute, String[] cmdline) {
+      execute.setAntRun(getProject());
+      execute.setCommandline(cmdline);
+
+      String logMessage = cmdline[0];
+      for (int i = 1; i < cmdline.length; i++) {
+         logMessage += " " + cmdline[i];
+      }
+      log("Command line: " + quote(logMessage) + '.', MSG_VERBOSE);
+   }
+
    private void deleteFile(File f) {
       try {
          f.delete();
@@ -660,8 +670,7 @@ public final class PngquantTask extends MatchingTask {
       Execute                    execute = new Execute(streamHandler, watchdog);
       String[]                   cmdline = new String[] { command };
 
-      execute.setAntRun(getProject());
-      execute.setCommandline(cmdline);
+      initExecute(execute, cmdline);
 
       // Attempt command execution
       Throwable caught;
