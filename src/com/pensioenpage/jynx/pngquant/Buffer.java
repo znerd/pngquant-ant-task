@@ -2,6 +2,10 @@
 package com.pensioenpage.jynx.pngquant;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -28,8 +32,7 @@ class Buffer extends Object implements ExecuteStreamHandler {
     * Constructs a new <code>Buffer</code>.
     */
    public Buffer() {
-      _outBuffer = new ByteArrayOutputStream();
-      _errBuffer = new ByteArrayOutputStream();
+      // empty
    }
 
 
@@ -38,14 +41,29 @@ class Buffer extends Object implements ExecuteStreamHandler {
    //-------------------------------------------------------------------------
 
    /**
-    * The buffer holding all <em>stdout</em> output. Never <code>null</code>.
+    * The stream to read all <em>stdin</em> input from.
+    * Initially <code>null</code>.
     */
-   private final ByteArrayOutputStream _outBuffer;
+   private InputStream _in;
+
+   /**
+    * The stream to send all <em>stdout</em> output to.
+    * Never <code>null</code>.
+    */
+   private OutputStream _out;
 
    /**
     * The buffer holding all <em>stderr</em> output. Never <code>null</code>.
     */
-   private final ByteArrayOutputStream _errBuffer;
+   private OutputStream _err;
+
+   /**
+    * The thread pumping input to the <em>stdin</em> input.
+    * Initially <code>null</code>, set by
+    * {@link #setProcessInputStream(OutputStream)}.
+    * The thread is started from the {@link #start()} method.
+    */
+   private Thread _inThread;
 
    /**
     * The thread pumping the <em>stdout</em> output to the buffer.
@@ -68,61 +86,153 @@ class Buffer extends Object implements ExecuteStreamHandler {
    // Methods
    //----------------------------------------------------------------------
 
+   public void setInputFile(File inFile)
+   throws IllegalArgumentException,
+          FileNotFoundException,
+          SecurityException {
+
+      // Check preconditions
+      if (inFile == null) {
+         throw new IllegalArgumentException("inFile == null");
+      }
+
+      // Create a stream from the file
+      _in = new FileInputStream(inFile);
+   }
+
+   public void redirectOutputTo(File outFile)
+   throws IllegalArgumentException,
+          FileNotFoundException,
+          SecurityException {
+
+      // Check preconditions
+      if (outFile == null) {
+         throw new IllegalArgumentException("outFile == null");
+      }
+
+      // Create a stream to the file, creating it in the process
+      _out = new FileOutputStream(outFile);
+   }
+
    // Specified by ExecuteStreamHandler
    public void setProcessInputStream(OutputStream os) {
-      // ignore, we don't send input to the process
+      if (_in != null) {
+         _inThread = new Thread(new StreamPumper(_in, os));
+      }
    }
 
    // Specified by ExecuteStreamHandler
    public void setProcessOutputStream(InputStream is) {
-      _outThread = new Thread(new StreamPumper(is, _outBuffer));
+      if (_out == null) {
+         _out = new ByteArrayOutputStream();
+      }
+      _outThread = new Thread(new StreamPumper(is, _out));
    }
 
    // Specified by ExecuteStreamHandler
    public void setProcessErrorStream(InputStream is) {
-      _errThread = new Thread(new StreamPumper(is, _errBuffer));
+      if (_err == null) {
+         _err = new ByteArrayOutputStream();
+      }
+      _errThread = new Thread(new StreamPumper(is, _err));
    }
 
    // Specified by ExecuteStreamHandler
    public void start() {
+      if (_inThread != null) {
+         _inThread.start();
+      }
       _outThread.start();
       _errThread.start();
    }
 
    // Specified by ExecuteStreamHandler
    public void stop() {
+      join( _inThread);
+      join(_outThread);
+      join(_errThread);
+
+      finish(_out);
+      finish(_err);
+   }
+
+   private void join(Thread thread) {
+
+      if (thread != null) {
+
+         // Join the thread, ignore errors
+         try {
+            thread.join();
+         } catch (InterruptedException e) {
+            // ignore
+         }
+      }
+   }
+
+   private void finish(OutputStream out) throws IllegalArgumentException {
+
+      if (out == null) {
+         throw new IllegalArgumentException("out == null");
+      }
+
       try {
-         _outThread.join();
-      } catch (InterruptedException e) {
+         out.flush();
+      } catch (Throwable e) {
          // ignore
       }
+
       try {
-         _errThread.join();
-      } catch (InterruptedException e) {
+         out.close();
+      } catch (Throwable e) {
          // ignore
       }
    }
 
    /**
-    * Copied all collected <em>stdout</em> output to the specified output
+    * Determines the number of bytes output to <em>stdout</em>.
+    *
+    * @return
+    *    the number of bytes output to <em>stdout</em>.
+    */
+   public long getOutSize() {
+      return getSize(_out);
+   }
+
+   private long getSize(OutputStream stream) throws IllegalArgumentException {
+      if (stream == null) {
+         throw new IllegalArgumentException("stream == null");
+      }
+
+      if (stream instanceof ByteArrayOutputStream) {
+         return ((ByteArrayOutputStream) stream).size();
+      } else if (stream instanceof FileOutputStream) {
+         try {
+            return ((FileOutputStream) stream).getChannel().size();
+         } catch (IOException cause) {
+            throw new Error("Failed to determine size of file.", cause);
+         }
+      } else {
+         throw new Error("Internal error: Unrecognized class " + stream.getClass().getName() + '.');
+      }
+   }
+
+   /**
+    * Copies all collected <em>stdout</em> output to the specified output
     * stream.
     *
-    * @param os
+    * @param target
     *    the {@link OutputStream} to copy the collected <em>stdout</em> output
     *    to, cannot be <code>null</code>.
     *
     * @throws IllegalArgumentException
-    *    if <code>os == null</code>.
+    *    if <code>target == null</code>.
     *
     * @throws IOException
     *    in case of an I/O error.
     */
-   public void writeOutTo(OutputStream os)
-   throws IOException {
-      if (os == null) {
-         throw new IllegalArgumentException("os == null");
-      }
-      _outBuffer.writeTo(os);
+   public void writeOutTo(OutputStream target)
+   throws IllegalArgumentException, IOException {
+      copy(_out, target);
    }
 
    /**
@@ -135,25 +245,56 @@ class Buffer extends Object implements ExecuteStreamHandler {
     *    never <code>null</code>.
     */
    public String getOutString() {
-      return _outBuffer.toString();
+      return _out.toString();
    }
 
    /**
-    * Copied all collected <em>stderr</em> output to the specified output
+    * Determines the number of bytes output to <em>stderr</em>.
+    *
+    * @return
+    *    the number of bytes output to <em>stderr</em>.
+    */
+   public long getErrSize() {
+      return getSize(_err);
+   }
+
+   /**
+    * Copies all collected <em>stderr</em> output to the specified output
     * stream.
     *
-    * @param os
+    * @param target
     *    the {@link OutputStream} to copy the collected <em>stderr</em> output
     *    to, cannot be <code>null</code>.
     *
     * @throws IllegalArgumentException
-    *    if <code>os == null</code>.
+    *    if <code>target == null</code>.
     *
     * @throws IOException
     *    in case of an I/O error.
     */
-   public void writeErrTo(OutputStream os) throws IOException {
-      _errBuffer.writeTo(os);
+   public void writeErrTo(OutputStream target)
+   throws IllegalArgumentException, IOException {
+      copy(_err, target);
+   }
+
+   private void copy(OutputStream source, OutputStream target)
+   throws IllegalArgumentException, IOException {
+
+      // Check preconditions
+      if (source == null) {
+         throw new IllegalArgumentException("source == null");
+      } else if (target == null) {
+         throw new IllegalArgumentException("target == null");
+      }
+
+      // Handle in-memory and in-file streams differently
+      if (_out instanceof ByteArrayOutputStream) {
+         ((ByteArrayOutputStream) _out).writeTo(target);
+      } else if (_out instanceof FileOutputStream) {
+         throw new Error(); // TODO
+      } else {
+         throw new Error("Internal error: Unrecognized class " + _out.getClass().getName() + '.');
+      }
    }
 
    /**
@@ -166,6 +307,6 @@ class Buffer extends Object implements ExecuteStreamHandler {
     *    never <code>null</code>.
     */
    public String getErrString() {
-      return _errBuffer.toString();
+      return _err.toString();
    }
 }

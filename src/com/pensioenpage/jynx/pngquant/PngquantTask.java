@@ -1,7 +1,9 @@
 // Copyright 2007-2009, PensioenPage B.V.
 package com.pensioenpage.jynx.pngquant;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.IOException;
@@ -19,6 +21,7 @@ import org.apache.tools.ant.taskdefs.Execute;
 import org.apache.tools.ant.taskdefs.ExecuteStreamHandler;
 import org.apache.tools.ant.taskdefs.ExecuteWatchdog;
 import org.apache.tools.ant.taskdefs.MatchingTask;
+import org.apache.tools.ant.taskdefs.PumpStreamHandler;
 import org.apache.tools.ant.types.FileSet;
 import org.apache.tools.ant.util.FileUtils;
 
@@ -201,7 +204,7 @@ public final class PngquantTask extends MatchingTask {
     *
     * @throws IllegalArgumentException
     *    if <code>location == null
-    *          || {@linkplain TextUtils}.{@linkplain TextUtils#isEmpty(String) isEmpty}(description)</code>.
+    *          || {@linkplain #isEmpty(String) isEmpty}(description)</code>.
     *
     * @throws BuildException
     *    if <code>  path == null
@@ -288,21 +291,16 @@ public final class PngquantTask extends MatchingTask {
 
    /**
     * Character string that indicates whether the files should be processed
-    * with pngquant at all. There are 3 options:
+    * at all. There are 3 options:
     * <dl>
     * <dt><code>"yes"</code> or <code>"true"</code>
-    * <dd>The files <em>must</em> be processed by pngquant.
-    *     If at least one file could not be processed, for example because
-    *     pngquant is unavailable or because there are unrecoverable errors,
-    *     then this task fails.
+    * <dd>See {@link ProcessOption#MUST}.
     *
     * <dt><code>"no"</code> or <code>"false"</code>
-    * <dd>The files must <em>not</em> be processed by pngquant but must instead
-    *     just be copied as-is, unchanged.
+    * <dd>See {@link ProcessOption#MUST_NOT}.
     *
     * <dt><code>"try"</code>
-    * <dd>Attempt to process the file, but if that fails, then just copy the
-    *     original file instead.
+    * <dd>See {@link ProcessOption#SHOULD}.
     * </dl>
     */
    private String _process;
@@ -359,7 +357,7 @@ public final class PngquantTask extends MatchingTask {
    }
 
    /**
-    * Configures the time-out for executing a single pngquant command. The
+    * Configures the time-out for executing a single command. The
     * default is 60 seconds. Setting this to 0 or lower disables the time-out
     * completely.
     *
@@ -373,21 +371,22 @@ public final class PngquantTask extends MatchingTask {
    }
 
    /**
-    * Sets whether the files should be processed with pngquant at all.
+    * Sets whether the files should be processed at all.
     * There are 3 options:
     * <dl>
     * <dt><code>"yes"</code> or <code>"true"</code>
-    * <dd>The files <em>must</em> be processed by pngquant.
-    *     If pngquant is unavailable, then this task fails.
+    * <dd>The files <em>must</em> be processed.
+    *     If the command is unavailable or if it fails to process any of the
+    *     files, then this task fails.
     *
     * <dt><code>"no"</code> or <code>"false"</code>
-    * <dd>The files must <em>not</em> be processed by pngquant but must instead
-    *     just be copied as-is, unchanged.
+    * <dd>The files must <em>not</em> be processed by the command but must
+    *     instead just be copied as-is, unchanged.
     *
     * <dt><code>"try"</code>
-    * <dd>If pngquant is available process the file(s), but if pngquant is
-    *     unavailable, then just copy the files instead (in which case a
-    *     warning will be output).
+    * <dd>If the command is available then process the file(s), but if the
+    *     command is unavailable or if it fails to process the file(s), then
+    *     just copy the files instead (a warning will then be output).
     * </dl>
     *
     * @param s
@@ -444,8 +443,10 @@ public final class PngquantTask extends MatchingTask {
       // Consider each individual file for processing/copying
       log("Transforming from " + _sourceDir.getPath() + " to " + _destDir.getPath() + '.', MSG_VERBOSE);
       long start = System.currentTimeMillis();
-      int failedCount = 0, optimizeCount = 0, copyCount = 0, skippedCount = 0;
+      int failedCount = 0, processCount = 0, copyCount = 0, skippedCount = 0;
       for (String inFileName : getDirectoryScanner(_sourceDir).getIncludedFiles()) {
+
+         long thisStart = System.currentTimeMillis();
 
          // Make sure the input file exists
          File inFile = new File(_sourceDir, inFileName);
@@ -461,7 +462,6 @@ public final class PngquantTask extends MatchingTask {
          }
 
          // Some preparations related to the input file and output file
-         long     thisStart = System.currentTimeMillis();
          String outFileName = inFileName.replaceFirst("\\.[a-zA-Z]+$", ".png");
          File       outFile = new File(_destDir, outFileName);
          String outFilePath = outFile.getPath();
@@ -480,51 +480,77 @@ public final class PngquantTask extends MatchingTask {
             continue;
          }
 
-         // File transformation (optimization) should be attempted
+         // File transformation should be attempted
          boolean copy = !transform;
          if (transform) {
 
-            // Prepare for the command execution
-            Buffer            buffer = new Buffer();
-            ExecuteWatchdog watchdog = (_timeOut > 0L) ? new ExecuteWatchdog(_timeOut) : null;
-            Execute          execute = new Execute(buffer, watchdog);
-            String[]         cmdline = new String[] { command, "-fix", "-force", "-out", outFilePath, "--", inFilePath };
+            boolean     failure = false;
+            String errorMessage = null;
+            Throwable    caught = null;
 
-            execute.setAntRun(getProject());
-            execute.setCommandline(cmdline);
-
-            // Execute the command
-            boolean failure;
+            // Create stream from input file
+            FileInputStream inStream = null;
             try {
-               execute.execute();
-               failure = execute.isFailure();
-            } catch (IOException cause) {
-               failure = true;
+               inStream = new FileInputStream(inFile);
+            } catch (Throwable exception) {
+               failure      = true;
+               errorMessage = "Failed to create input stream from file " + quote(inFilePath) + '.';
+               caught       = exception;
             }
 
-            // Output to stderr indicates a failure
-            String errorOutput = buffer.getErrString();
-            failure            = failure ? true : ! isEmpty(errorOutput);
+            // Create stream to output file
+            FileOutputStream outStream = null;
+            if (! failure) try {
+               outStream = new FileOutputStream(outFile);
+            } catch (Throwable exception) {
+               failure      = true;
+               errorMessage = "Failed to create output stream to file " + quote(outFilePath) + '.';
+               caught       = exception;
+            }
 
-            // A non-existent or empty file also indicate failure
             if (! failure) {
-               if (! outFile.exists()) {
-                  failure     = true;
-                  errorOutput = "Output file not created.";
-               } else if (outFile.length() < 1L) {
-                  failure     = true;
-                  errorOutput = "Generated output file is empty.";
+
+               // Create stream to error buffer
+               ByteArrayOutputStream errStream = new ByteArrayOutputStream();
+
+               // Prepare for the command execution
+               PumpStreamHandler streamHandler = new PumpStreamHandler(outStream, errStream, inStream);
+               ExecuteWatchdog        watchdog = (_timeOut > 0L) ? new ExecuteWatchdog(_timeOut) : null;
+               Execute                 execute = new Execute(streamHandler, watchdog);
+               String[]                cmdline = new String[] { command };
+
+               execute.setAntRun(getProject());
+               execute.setCommandline(cmdline);
+
+               // Execute the command
+               try {
+                  execute.execute();
+                  failure = execute.isFailure();
+               } catch (IOException exception) {
+                  failure = true;
+                  caught  = exception;
+               }
+
+               // Output to stderr indicates a failure
+               errorMessage = errStream.toString();
+               if (! isEmpty(errorMessage)) {
+                  failure = true;
+
+               // Empty output also indicates failure
+               } else if (! failure && !(outFile.exists() && outFile.length() > 0L)) {
+                  failure      = true;
+                  errorMessage = "No output produced.";
                }
             }
 
             // Log the result for this individual file
             long thisDuration = System.currentTimeMillis() - thisStart;
             if (failure) {
-               String logMessage = "Failed to optimize " + quote(inFilePath);
-               if (isEmpty(errorOutput)) {
+               String logMessage = "Failed to process " + quote(inFilePath) + " (took " + thisDuration + " ms)";
+               if (isEmpty(errorMessage)) {
                   logMessage += '.';
                } else {
-                  logMessage += ": " + errorOutput;
+                  logMessage += ": " + errorMessage;
                }
                log(logMessage, MSG_ERR);
                failedCount++;
@@ -534,8 +560,8 @@ public final class PngquantTask extends MatchingTask {
                   copy = true;
                }
             } else {
-               log("Optimized " + quote(inFileName) + " in " + thisDuration + " ms.", MSG_VERBOSE);
-               optimizeCount++;
+               log("Processed " + quote(inFileName) + " in " + thisDuration + " ms.", MSG_VERBOSE);
+               processCount++;
             }
          }
 
@@ -546,7 +572,7 @@ public final class PngquantTask extends MatchingTask {
                long thisDuration = System.currentTimeMillis() - thisStart;
                log("Copied " + quote(inFileName) + " in " + thisDuration + " ms.", MSG_VERBOSE);
                copyCount++;
-            } catch (Throwable cause) {
+            } catch (Throwable exception) {
                String logMessage = "Failed to copy " + quote(inFilePath) + " to " + quote(outFilePath) + '.';
                log(logMessage, MSG_ERR);
                failedCount++;
@@ -557,9 +583,9 @@ public final class PngquantTask extends MatchingTask {
       // Log the total result
       long duration = System.currentTimeMillis() - start;
       if (failedCount > 0) {
-         throw new BuildException("" + failedCount + " file(s) failed to be optimized and/or copied; " + optimizeCount + " file(s) optimized; " + copyCount + " file(s) copied; " + skippedCount + " file(s) skipped. Total duration is " + duration + " ms.");
+         throw new BuildException("" + failedCount + " file(s) failed to be processed and/or copied; " + processCount + " file(s) processed; " + copyCount + " file(s) copied; " + skippedCount + " file(s) skipped. Total duration is " + duration + " ms.");
       } else {
-         log("" + optimizeCount + " file(s) optimized and " + copyCount + " file(s) copied in " + duration + " ms; " + skippedCount + " file(s) skipped.");
+         log("" + processCount + " file(s) processed and " + copyCount + " file(s) copied in " + duration + " ms; " + skippedCount + " file(s) skipped.");
       }
    }
 
@@ -581,12 +607,16 @@ public final class PngquantTask extends MatchingTask {
       // Create a watch dog, if a time-out is configured
       ExecuteWatchdog watchdog = (_timeOut > 0L) ? new ExecuteWatchdog(_timeOut) : null;
 
-      // Check that the command is executable
-      Buffer    buffer = new Buffer();
-      Execute  execute = new Execute(buffer, watchdog);
-      String[] cmdline = new String[] { command, "-version" };
+      // Prepare for command execution
+      ByteArrayOutputStream    outAndErr = new ByteArrayOutputStream();
+      ExecuteStreamHandler streamHandler = new PumpStreamHandler(outAndErr);
+      Execute                    execute = new Execute(streamHandler, watchdog);
+      String[]                   cmdline = new String[] { command };
+
       execute.setAntRun(getProject());
       execute.setCommandline(cmdline);
+
+      // Attempt command execution
       Throwable caught;
       try {
          execute.execute();
@@ -598,7 +628,7 @@ public final class PngquantTask extends MatchingTask {
       // Executing the command triggered an exception
       boolean commandAvailable;
       if (caught != null) {
-         String message = "Unable to execute pngquant command " + quote(command) + '.';
+         String message = "Unable to execute command " + quote(command) + '.';
          if (processOption == ProcessOption.MUST) {
             throw new BuildException(message, caught);
          } else {
@@ -606,9 +636,12 @@ public final class PngquantTask extends MatchingTask {
             commandAvailable = false;
          }
 
-      // Executing the command resulted in a non-zero code, indicating failure
-      } else if (execute.getExitValue() != 0) {
-         String message = "Unable to execute pngquant command " + quote(command) + ". Running '" + command + " -v' resulted in exit code " + execute.getExitValue() + '.';
+      // Executing the command resulted in a exit code other than 0 or 1,
+      // indicating failure
+      // NOTE: There is no way to determine the version of pngquant without
+      //       pngquant returning 1 from the command, d'oh
+      } else if (execute.getExitValue() != 0 && execute.getExitValue() != 1) {
+         String message = "Unable to execute command " + quote(command) + ". Running '" + command + "' resulted in exit code " + execute.getExitValue() + '.';
          if (processOption == ProcessOption.MUST) {
             throw new BuildException(message);
          } else {
@@ -617,12 +650,19 @@ public final class PngquantTask extends MatchingTask {
          }
 
       // Command was executed successfully
+      // NOTE: The version information is sent to stderr instead of stdout,
+      //       there seems to be no way in pngquant 1.0 to change this, d'oh
       } else {
          Pattern pattern = Pattern.compile("^[^0-9]*([0-9]+(\\.[0-9]+)*)");
-         Matcher matcher = pattern.matcher(buffer.getOutString());
-         String  version = matcher.find() ? quote(matcher.group(1)) : "unknown";
-         log("Using command " + quote(command) + ", version is " + version + '.', MSG_VERBOSE);
-         commandAvailable = true;
+         Matcher matcher = pattern.matcher(outAndErr.toString());
+         if (! matcher.find()) {
+            log("Unable to execute command " + quote(command) + ". No version output found (on stderr) when running the command without arguments.", MSG_ERR);
+            commandAvailable = false;
+         } else {
+            String version = quote(matcher.group(1));
+            log("Using command " + quote(command) + ", version is " + version + '.', MSG_VERBOSE);
+            commandAvailable = true;
+         }
       }
 
       return commandAvailable;
@@ -641,19 +681,19 @@ public final class PngquantTask extends MatchingTask {
    private enum ProcessOption {
 
       /**
-       * Force processing with pngquant. If the pngquant command is not
-       * available, then fail.
+       * Force processing: if the command is unavailable or fails to execute
+       * successfully, then this task will fail.
        */
       MUST,
          
       /**
-       * Skip pngquant processing completely. Just copy the files.
+       * Skip processing completely: just copy the files.
        */
       MUST_NOT,
 
       /**
-       * Try pngquant processing. If the processing fails, then copy the
-       * original file.
+       * Attempt processing, but fallback to copying if processing fails.
+       * The task will only fail if the copying also fails to succeed.
        */
       SHOULD;
    }
