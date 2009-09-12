@@ -251,7 +251,7 @@ public final class PngquantTask extends MatchingTask {
     * Constructs a new <code>PngquantTask</code> object.
     */
    public PngquantTask() {
-      // empty
+      _numColors = 256;
    }
 
 
@@ -304,6 +304,12 @@ public final class PngquantTask extends MatchingTask {
     * </dl>
     */
    private String _process;
+
+   /**
+    * The number of colors to reduce to. Must be between 2 and 256, although
+    * the value of this field can be outside this range.
+    */
+   private int _numColors;
 
    
    //-------------------------------------------------------------------------
@@ -398,6 +404,17 @@ public final class PngquantTask extends MatchingTask {
       _process = s;
    }
 
+   /**
+    * Sets the number of colors to reduce the color palette to. Must be
+    * between 2 and 256.
+    *
+    * @param numColors
+    *    the number of colors.
+    */
+   public void setColors(int numColors) {
+      _numColors = numColors;
+   }
+
    @Override
    public void execute() throws BuildException {
 
@@ -439,6 +456,13 @@ public final class PngquantTask extends MatchingTask {
       // Determine if transformation should be attempted at all
       // (alternative is just copying)
       boolean transform = processOption != ProcessOption.MUST_NOT && commandAvailable;
+
+      // Determine the number of colors
+      if (_numColors < 2) {
+         throw new BuildException("Number of colors (" + _numColors + ") is invalid, it is too low. It should be between 2 and 256.");
+      } else if (_numColors > 256) {
+         throw new BuildException("Number of colors (" + _numColors + ") is invalid, it is too high. It should be between 2 and 256.");
+      }
 
       // Consider each individual file for processing/copying
       log("Transforming from " + _sourceDir.getPath() + " to " + _destDir.getPath() + '.', MSG_VERBOSE);
@@ -489,7 +513,7 @@ public final class PngquantTask extends MatchingTask {
             Throwable    caught = null;
 
             // Create temporary input file
-            File tempInFile;
+            File tempInFile = null;
             try {
                tempInFile = File.createTempFile(getClass().getSimpleName(), ".png");
                log("Created temporary input file \"" + tempInFile.getPath() + "\".", MSG_VERBOSE);
@@ -501,11 +525,17 @@ public final class PngquantTask extends MatchingTask {
 
             if (! failure) try {
 
+               // TODO: Send stdout output to a NullOutputStream
+
+               // Create stream to out/error buffer
+               ByteArrayOutputStream outStream = new ByteArrayOutputStream();
+               ByteArrayOutputStream errStream = new ByteArrayOutputStream();
+ 
                // Prepare for the command execution
-               PumpStreamHandler streamHandler = new PumpStreamHandler();
+               PumpStreamHandler streamHandler = new PumpStreamHandler(outStream, errStream);
                ExecuteWatchdog        watchdog = (_timeOut > 0L) ? new ExecuteWatchdog(_timeOut) : null;
                Execute                 execute = new Execute(streamHandler, watchdog);
-               String[]                cmdline = new String[] { command, tempInFile.getPath() };
+               String[]                cmdline = new String[] { command, String.valueOf(_numColors), tempInFile.getPath() };
 
                execute.setAntRun(getProject());
                execute.setCommandline(cmdline);
@@ -539,8 +569,14 @@ public final class PngquantTask extends MatchingTask {
                   deleteFile(tempOutFile);
 
                // Copy the temporary output file to the target location
-               } else {
+               } else try {
                   FileUtils.getFileUtils().copyFile(tempOutFile, outFile);
+               } catch (Throwable exception) {
+                  failure      = true;
+                  errorMessage = "Failed to copy " + quote(tempOutFile.getPath()) + " to " + quote(outFile.getPath()) + '.';
+                  caught       = exception;
+                  deleteFile(tempOutFile);
+                  deleteFile(outFile);
                }
             } finally {
                tempInFile.delete();
